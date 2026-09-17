@@ -7,21 +7,18 @@ import csv
 from pymongo import MongoClient
 from datetime import datetime
 
-# CONFIG
-API_KEY = "ijiEoo6t"
-CLIENT_CODE = "AACA085039"
-PASSWORD = "1211"
-TOTP_SECRET = "6AU4DOG3HZWSRYJAOZJDBV7674"
+# CONFIG — credentials sourced from environment (see .env)
+API_KEY = os.environ.get("ORDERBOOK_API_KEY", "")
+CLIENT_CODE = os.environ.get("ORDERBOOK_CLIENT_CODE", "")
+PASSWORD = os.environ.get("ORDERBOOK_PASSWORD", "")
+TOTP_SECRET = os.environ.get("ORDERBOOK_TOTP_SECRET", "")
 
 MARKET_TZ = timezone(timedelta(hours=5, minutes=30))
 
 DB_NAME = "autotrader"
 COLLECTION_NAME = "order_history"
 
-MONGO_URI = os.environ.get(
-    "MONGO_URI",
-    "mongodb+srv://ankitarrow:ankitarrow@cluster0.zcajdur.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0"
-).strip();
+MONGO_URI = os.environ.get("MONGO_URI", "").strip()
 
 
 mongo_client = MongoClient(MONGO_URI)
@@ -137,7 +134,7 @@ def save_orders_to_csv(orders):
                 "rejection_reason": o.get("rejection_reason"),
             })
 
-    print(f"[OK] CSV saved successfully Ã¢â€ â€™ {filepath}")
+    print(f"[OK] CSV saved successfully -> {filepath}")
     return filepath
 
 

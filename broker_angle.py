@@ -2,20 +2,42 @@ import os
 import getpass
 import json
 import time
+import concurrent.futures
 from datetime import datetime
 from SmartApi import SmartConnect
 import requests
 from tabulate import tabulate
 
+from core.logging import get_logger
+
+_broker_log = get_logger("BROKER")
+
+# Resilience fix (error_fix_detail.md #1): every Angel One SDK call previously had
+# no timeout and could hang the calling thread forever on a network stall. Calls
+# are now bounded by running them on this pool and enforcing BROKER_API_TIMEOUT_SECONDS.
+# Note: this is a best-effort timeout — the underlying blocked call keeps running on
+# its worker thread even after we stop waiting for it (Python threads cannot be
+# force-killed); a generous worker count keeps one stuck call from starving others.
+BROKER_API_TIMEOUT_SECONDS = float(os.environ.get("BROKER_API_TIMEOUT_SECONDS", "20"))
+_BROKER_CALL_EXECUTOR = concurrent.futures.ThreadPoolExecutor(
+    max_workers=16, thread_name_prefix="broker-api"
+)
+
+# Resilience fix (error_fix_detail.md #3): per-symbol timeout for the bulk LTP loop.
+BULK_LTP_PER_SYMBOL_TIMEOUT_SECONDS = float(os.environ.get("BULK_LTP_PER_SYMBOL_TIMEOUT_SECONDS", "8"))
+BULK_LTP_OVERALL_TIMEOUT_SECONDS = float(os.environ.get("BULK_LTP_OVERALL_TIMEOUT_SECONDS", "30"))
+
+
 class BrokerConnector:
 
-    def __init__(self, instruments_path="NSE.json", require_totp=False):
-        self.api_key = os.getenv("ANGEL_API_KEY") or input("Enter your Angel One API Key: ").strip()
-        self.client_code = os.getenv("ANGEL_CLIENT_CODE") or input("Enter your Client Code: ").strip()
-        self.password = os.getenv("ANGEL_PASSWORD") or getpass.getpass("Enter your Password: ").strip()
+    def __init__(self, instruments_path="NSE.json", require_totp=False,
+                 api_key=None, client_code=None, password=None, totp=None):
+        self.api_key = api_key or os.getenv("ANGEL_API_KEY") or input("Enter your Angel One API Key: ").strip()
+        self.client_code = client_code or os.getenv("ANGEL_CLIENT_CODE") or input("Enter your Client Code: ").strip()
+        self.password = password or os.getenv("ANGEL_PASSWORD") or getpass.getpass("Enter your Password: ").strip()
         # self.totp = os.getenv("ANGEL_TOTP") or input("Enter your TOTP (if enabled; press Enter to skip): ").strip()
         if require_totp:
-            self.totp = os.getenv("ANGEL_TOTP") or input("Enter TOTP: ").strip()
+            self.totp = (totp if totp is not None else os.getenv("ANGEL_TOTP")) or input("Enter TOTP: ").strip()
         else:
             self.totp = None
         self.instruments_path = instruments_path
@@ -39,40 +61,75 @@ class BrokerConnector:
         """
         Angel SmartAPI has NO bulk LTP.
         We loop symbol-by-symbol.
+
+        Resilience fix (error_fix_detail.md #3): symbols are fetched concurrently,
+        each bounded by BULK_LTP_PER_SYMBOL_TIMEOUT_SECONDS, with an overall cap of
+        BULK_LTP_OVERALL_TIMEOUT_SECONDS, so one slow/hung symbol can no longer
+        stall the whole cycle for every other symbol the way the sequential loop
+        did. A symbol that fails or times out is skipped and logged, exactly as
+        the old per-symbol try/except already did — only the concurrency changed.
         """
 
         out = {}
 
         try:
             if not self.obj:
-                print("[BROKER LTP] SmartConnect not ready")
+                _broker_log.warning("BULK_LTP_NOT_READY")
                 return {}
 
-            for sym in symbols:
+            def _fetch_one(sym):
+                token = self.get_symbol_token(sym)
+                if not token:
+                    _broker_log.warning("LTP_TOKEN_MISSING symbol=%s", sym)
+                    return None
+
+                resp = self.obj.ltpData("NSE", f"{sym}-EQ", token)
+
+                if (
+                    isinstance(resp, dict)
+                    and resp.get("status")
+                    and resp.get("data")
+                ):
+                    ltp = resp["data"].get("ltp")
+                    if ltp:
+                        return float(ltp)
+                return None
+
+            # Not using `with pool:` deliberately: the context manager's __exit__
+            # calls shutdown(wait=True), which would block this function until
+            # every submitted call finishes - including a hung one - defeating the
+            # whole point of the overall timeout below. shutdown(wait=False) lets
+            # this function return on schedule; any still-running calls are simply
+            # abandoned to finish (or not) on their own in the background, exactly
+            # as a bare thread with no join() would today.
+            pool = concurrent.futures.ThreadPoolExecutor(
+                max_workers=min(len(symbols), 16) or 1, thread_name_prefix="bulk-ltp"
+            )
+            try:
+                futures = {pool.submit(_fetch_one, sym): sym for sym in symbols}
                 try:
-                    token = self.get_symbol_token(sym)
-                    if not token:
-                        print(f"[LTP] token missing for {sym}")
-                        continue
-
-                    resp = self.obj.ltpData("NSE", f"{sym}-EQ", token)
-
-                    if (
-                        isinstance(resp, dict)
-                        and resp.get("status")
-                        and resp.get("data")
+                    for fut in concurrent.futures.as_completed(
+                        futures, timeout=BULK_LTP_OVERALL_TIMEOUT_SECONDS
                     ):
-                        ltp = resp["data"].get("ltp")
-                        if ltp:
-                            out[sym.upper()] = float(ltp)
-
-                except Exception as e:
-                    print(f"[LTP FAIL] {sym}: {e}")
+                        sym = futures[fut]
+                        try:
+                            ltp = fut.result(timeout=BULK_LTP_PER_SYMBOL_TIMEOUT_SECONDS)
+                            if ltp is not None:
+                                out[sym.upper()] = ltp
+                        except Exception as e:
+                            _broker_log.warning("LTP_FAILED symbol=%s error=%s", sym, e)
+                except concurrent.futures.TimeoutError:
+                    _broker_log.warning(
+                        "BULK_LTP_OVERALL_TIMEOUT elapsed=%ss fetched=%s/%s",
+                        BULK_LTP_OVERALL_TIMEOUT_SECONDS, len(out), len(symbols),
+                    )
+            finally:
+                pool.shutdown(wait=False)
 
             return out
 
         except Exception as e:
-            print("[BROKER BULK LOOP ERROR]", e)
+            _broker_log.warning("BULK_LTP_LOOP_FAILED error=%s", e)
             return {}
 
 
@@ -132,8 +189,7 @@ class BrokerConnector:
                 self.obj = obj
                 self.user = self.client_code
                 
-                print("ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã¢â‚¬Â¦ÃƒÂ¢Ã¢â€šÂ¬Ã…â€œÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã¢â‚¬Å“ Angel One account linked successfully.")
-                
+                _broker_log.info("ANGEL_ACCOUNT_LINKED client_code=%s", self.user)
                 return {
                     "user": self.user,
                     "token": self.access_token,
@@ -206,12 +262,10 @@ class BrokerConnector:
                     self.access_token = new_jwt
                     self.obj.setAccessToken(self.access_token)
             else:
-                print("Refresh failed:", new_tokens)    
+                _broker_log.warning("REFRESH_TOKEN_FAILED")
         except Exception as e:
-            print("Refresh token failed:", e)
+            _broker_log.warning("REFRESH_TOKEN_FAILED error=%s", e)
 
-        # print("broker is restored succcessfully", broker)
-        print("self.obj in restore session", self.obj)
         return {
             "user": self.client_code,
             "token": self.access_token,
@@ -232,14 +286,14 @@ class BrokerConnector:
             "api_key": self.api_key,
             "client_code": self.client_code,
         }
-        print(
-            f"[BROKER WS-CREDS] client={self.client_code} "
-            f"auth_token={'OK' if token else 'MISSING'} "
-            f"feed_token={'OK' if self.feed_token else 'MISSING'} "
-            f"api_key={'OK' if self.api_key else 'MISSING'}"
+        _broker_log.info(
+            "WS_CREDENTIALS client=%s auth_token=%s feed_token=%s api_key=%s",
+            self.client_code,
+            'OK' if token else 'MISSING',
+            'OK' if self.feed_token else 'MISSING',
+            'OK' if self.api_key else 'MISSING',
         )
         return creds
-
     def get_session(self):
         """Return active session dict. Will create session if not already active."""
         if self.obj and self.access_token:
@@ -304,27 +358,24 @@ class BrokerConnector:
 
         # ---- DEBUG PRINT ----
             if msg or code:
-             print("\n[AUTH DEBUG] Evaluating auth error")
-             print(f"[AUTH DEBUG] status={status}")
-             print(f"[AUTH DEBUG] message='{msg}'")
-             print(f"[AUTH DEBUG] errorcode='{code}'")
+             _broker_log.debug("AUTH_ERROR_EVAL status=%s message=%s errorcode=%s", status, msg, code)
 
         # Check hard error codes first
             if code in hard_auth_codes:
-             print(f"[AUTH DEBUG] ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬ ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ MATCH: hard auth error code '{code}'")
+             _broker_log.debug("AUTH_ERROR_MATCH hard_code=%s", code)
              return True
 
         # Check message markers
             for marker in real_auth_markers:
                 if marker in msg:
-                    print(f"[AUTH DEBUG] ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬ ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ MATCH: message contains '{marker}'")
+                    _broker_log.debug("AUTH_ERROR_MATCH marker=%s", marker)
                     return True
 
-            print("[AUTH DEBUG] ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬ ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ NOT an auth error")
+            _broker_log.debug("AUTH_ERROR_NO_MATCH")
             return False
 
         except Exception as e:
-            print(f"[AUTH DEBUG] Exception while detecting auth error: {e}")
+            _broker_log.debug("AUTH_ERROR_DETECT_FAILED error=%s", e)
             return False
 
 
@@ -354,13 +405,25 @@ class BrokerConnector:
         Call Angel One API ONCE.
         Retry is handled by caller.
         NEVER auto re-login.
+
+        Bounded by BROKER_API_TIMEOUT_SECONDS (error_fix_detail.md #1) so a hung
+        SDK/network call raises instead of blocking the caller forever. Callers
+        already wrap this in try/except and treat any exception the same way, so
+        this only changes behavior on the timeout (unhappy) path.
         """
-        resp = fn(*args, **kwargs)
+        future = _BROKER_CALL_EXECUTOR.submit(fn, *args, **kwargs)
+        try:
+            resp = future.result(timeout=BROKER_API_TIMEOUT_SECONDS)
+        except concurrent.futures.TimeoutError:
+            raise TimeoutError(
+                f"Broker API call timed out after {BROKER_API_TIMEOUT_SECONDS}s: "
+                f"{getattr(fn, '__name__', fn)}"
+            )
 
         if isinstance(resp, dict) and self._is_auth_error(resp):
             raise RuntimeError("SESSION_EXPIRED_RELOGIN_REQUIRED")
 
-        return resp     
+        return resp
 
     def _load_instruments(self):
         """Load and return instruments JSON."""
@@ -460,12 +523,10 @@ class BrokerConnector:
                 m2m_realized = float(data.get("m2mrealized") or 0)
                 m2m_unrealized = float(data.get("m2munrealized") or 0)
                 
-                print("\n========== ACCOUNT SUMMARY ==========")
-                print(f"Available Cash: ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¹{available_cash:,.2f}")
-                print(f"Collateral: ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¹{collateral:,.2f}")
-                print(f"M2M Realized: ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¹{m2m_realized:,.2f}")
-                print(f"M2M Unrealized: ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¹{m2m_unrealized:,.2f}")
-                print("=====================================\n")
+                _broker_log.info(
+                    "ACCOUNT_SUMMARY available_cash=%s collateral=%s m2m_realized=%s m2m_unrealized=%s",
+                    available_cash, collateral, m2m_realized, m2m_unrealized,
+                )
                 
                 try:
                     holdings_resp = self._call_api(session["obj"].holding)
@@ -482,9 +543,7 @@ class BrokerConnector:
                                     cols = ["tradingsymbol", "quantity", "averageprice", "ltp", "pnl"]
                                     available_cols = [c for c in cols if c in df.columns]
                                     if available_cols:
-                                        print("ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â°ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¸ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã¢â‚¬Å“ÃƒÆ’Ã¢â‚¬Â¦  Holdings:")
-                                        print(tabulate(df[available_cols], headers="keys", tablefmt="psql", showindex=False))
-                                        print()
+                                        _broker_log.debug("HOLDINGS table=%s", tabulate(df[available_cols], headers="keys", tablefmt="psql", showindex=False))
                             except ImportError:
                                 pass
                     
@@ -499,9 +558,7 @@ class BrokerConnector:
                                     cols = ["tradingsymbol", "netqty", "avgprice", "ltp", "pnl"]
                                     available_cols = [c for c in cols if c in df.columns]
                                     if available_cols:
-                                        print("ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â°ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¸ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã¢â‚¬Å“ÃƒÆ’Ã¢â‚¬Â¹ÃƒÂ¢Ã¢â€šÂ¬  Positions:")
-                                        print(tabulate(df[available_cols], headers="keys", tablefmt="psql", showindex=False))
-                                        print()
+                                        _broker_log.debug("POSITIONS table=%s", tabulate(df[available_cols], headers="keys", tablefmt="psql", showindex=False))
                             except ImportError:
                                 pass
                 except Exception:
@@ -553,28 +610,27 @@ class BrokerConnector:
         elapsed = 0
         while elapsed < max_wait_seconds:
             try:
-                 order_book_resp = None
+                order_book_resp = None
 
-                # order_book_resp = self._call_api(session["obj"].orderBook)
-                 for attempt in range(3):
+                for attempt in range(3):
                     try:
                         order_book_resp = self._call_api(session["obj"].orderBook)
                         break
                     except RuntimeError as e:
                         if "SESSION_EXPIRED_RELOGIN_REQUIRED" in str(e):
                             raise
-                        print(f"[WARN] orderBook failed (attempt {attempt + 1}/3): {e}")
+                        _broker_log.warning("ORDERBOOK_FAILED attempt=%s error=%s", attempt + 1, e)
                         time.sleep(check_interval)
 
-                 if order_book_resp is None:
-                     return {
-                         "filled": False,
-                         "status": "API_ERROR",
-                         "avg_price": 0,
-                         "message": "orderBook failed after retries"
-                     }
+                if order_book_resp is None:
+                    return {
+                        "filled": False,
+                        "status": "API_ERROR",
+                        "avg_price": 0,
+                        "message": "orderBook failed after retries"
+                    }
                 
-                 if order_book_resp.get("status") and order_book_resp.get("data"):
+                if order_book_resp.get("status") and order_book_resp.get("data"):
                     orders = order_book_resp["data"]
                     
                     for order in orders:
@@ -589,7 +645,7 @@ class BrokerConnector:
                                     "filled": True,
                                     "status": order_status,
                                     "avg_price": avg_price,
-                                    "message": f"Order {order_id} filled at ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¹{avg_price:.2f}"
+                                    "message": f"Order {order_id} filled at Rs{avg_price:.2f}"
                                 }
                             
                             # Check if order failed
@@ -607,11 +663,11 @@ class BrokerConnector:
                                 elapsed += check_interval
                                 continue
                 
-                 time.sleep(check_interval)
-                 elapsed += check_interval
+                time.sleep(check_interval)
+                elapsed += check_interval
                 
             except Exception as e:
-                print(f"[WARN] Error checking order status: {e}")
+                _broker_log.warning("ORDER_STATUS_CHECK_FAILED error=%s", e)
                 time.sleep(check_interval)
                 elapsed += check_interval
         
@@ -690,7 +746,10 @@ class BrokerConnector:
         }
 
         try:
-            print(f"[ORDER] Placing {api_side} order: {symbol} x {qty} @ {price_value} | SL: {stoploss_value} | Type: {order_type}")
+            _broker_log.info(
+                "ORDER_PLACING side=%s symbol=%s qty=%s price=%s stoploss=%s type=%s",
+                api_side, symbol, qty, price_value, stoploss_value, order_type,
+            )
             resp = self._call_api(session["obj"].placeOrder, orderparams)
 
             order_id = None
@@ -712,7 +771,7 @@ class BrokerConnector:
             if wait_for_confirmation:
                 confirmation = self._wait_for_order_confirmation(session, order_id)
                 if confirmation.get("filled"):
-                    print(f"[ORDER] Filled: {symbol} @ {confirmation['avg_price']:.2f}")
+                    _broker_log.info("ORDER_FILLED symbol=%s avg_price=%.2f", symbol, confirmation['avg_price'])
                     return {"status": "success", "order_id": order_id, "filled": True,
                             "avg_price": confirmation["avg_price"], "raw": resp}
                 else:

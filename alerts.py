@@ -2,6 +2,11 @@ import os
 import requests
 from datetime import datetime
 
+from core.logging import get_logger
+
+_alert_log = get_logger("ALERT")
+
+
 class AlertManager:
     def __init__(self, token=None, chat_id=None):
         self.token = token or os.getenv("TELEGRAM_BOT_TOKEN")
@@ -9,7 +14,7 @@ class AlertManager:
 
     def notify(self, message):
         ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        print(f"[{ts}] {message}")
+        _alert_log.info("ALERT message=%s", message)
         if self.token and self.chat_id:
             try:
                 requests.post(

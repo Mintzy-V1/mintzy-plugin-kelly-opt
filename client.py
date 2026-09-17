@@ -10,8 +10,13 @@ import pandas as pd
 from typing import List, Union, Optional
 import traceback
 
+from core.logging import get_logger
+
 # token manager
 from utils.token_manager import get_access_token
+
+_pred_log = get_logger("BROKER")
+_market_log = get_logger("BROKER")
 
 
 # ==========================================================
@@ -50,7 +55,7 @@ class PredictionClient:
     def __init__(self, api_key: str, base_url: str):
         self.api_key = api_key
         self.base_url = base_url
-        print(f"[PRED CLIENT INIT] URL={base_url}, API_KEY={api_key[:30]}...")
+        _pred_log.info("PREDICTION_CLIENT_INIT url=%s api_key_present=%s", base_url, bool(api_key))
 
     # ---------------- RESPONSE FORMATTER ----------------
 
@@ -59,7 +64,7 @@ class PredictionClient:
         result = response_json.get("result", {})
 
         if not isinstance(result, dict):
-            print(f"[PRED CLIENT] Invalid response format: {type(result)}")
+            _pred_log.warning("PREDICTION_INVALID_RESPONSE type=%s", type(result).__name__)
             return pd.DataFrame([{
                 "Error": "Invalid response format from prediction API",
                 "Raw": str(response_json)
@@ -68,7 +73,7 @@ class PredictionClient:
         for ticker in tickers:
             ticker_block = result.get(ticker, {})
             if not isinstance(ticker_block, dict):
-                print(f"[PRED CLIENT] Unexpected response for {ticker}: {ticker_block!r}")
+                _pred_log.warning("PREDICTION_UNEXPECTED_RESPONSE ticker=%s", ticker)
                 rows.append({"Ticker": ticker, "Parameter": "N/A", "Error": f"Bad API response: {ticker_block!r}"})
                 continue
 
@@ -122,11 +127,11 @@ class PredictionClient:
                         })
 
                 else:
-                    print(f"[PRED CLIENT] Unsupported param_data type for {ticker}.{param}: {type(param_data)}")
+                    _pred_log.warning("PREDICTION_UNSUPPORTED_PARAM ticker=%s param=%s type=%s", ticker, param, type(param_data).__name__)
                     rows.append({"Ticker": ticker, "Parameter": param, "Error": f"Unsupported type: {type(param_data)}"})
 
         df_result = pd.DataFrame(rows)
-        print(f"[PRED CLIENT] Formatted {len(df_result)} prediction rows")
+        _pred_log.info("PREDICTION_FORMATTED rows=%d", len(df_result))
         return df_result
 
     # ---------------- PREDICTION CALL ----------------
@@ -141,8 +146,8 @@ class PredictionClient:
         debug: bool = False
     ) -> pd.DataFrame:
 
-        print("ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â°ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¦ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¸ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚ÂÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¥ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â°ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¦ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¸ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚ÂÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¥ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â°ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¦ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¸ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚ÂÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¥ PREDICTION CLIENT ENTERED ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â°ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¦ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¸ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚ÂÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¥ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â°ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¦ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¸ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚ÂÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¥ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â°ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¦ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¸ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚ÂÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¥", flush=True)
-        print(f"[PRED CLIENT] ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¾Ãƒâ€šÃ‚Â¢ CALLED: tickers={tickers}, time_frame={time_frame}, candle={candle}")
+        _pred_log.info("PREDICTION_CALL tickers=%s time_frame=%s candle=%s", tickers, time_frame, candle)
+        _pred_log.info("PREDICTION_CALL tickers=%s time_frame=%s candle=%s", tickers, time_frame, candle)
 
         try:
             if self.api_key not in self.VALID_KEYS:
@@ -179,7 +184,7 @@ class PredictionClient:
                 }
             }
 
-            print(f"[PRED CLIENT] Payload built: {len(tickers)} tickers")
+            _pred_log.info("PREDICTION_PAYLOAD_BUILT tickers=%d", len(tickers))
 
             resp = requests.post(
                 self.base_url,
@@ -204,7 +209,7 @@ class PredictionClient:
             df.reset_index(drop=True, inplace=True)
             df["Timestamp"] = df["Timestamp"].astype(str)
 
-            print(f"[PRED CLIENT] ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¦ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã¢â‚¬Å“ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦ÃƒÂ¢Ã¢â€šÂ¬Ã…â€œ Returning DataFrame {len(df)} rows")
+            _pred_log.info("PREDICTION_RETURNING rows=%d", len(df))
 
             return df
 
@@ -240,11 +245,15 @@ class MarketClient:
                 ssl_cert_reqs=None,
                 decode_responses=True,
                 socket_connect_timeout=5,
+                # Resilience fix (error_fix_detail.md #2): socket_connect_timeout only
+                # bounds the initial TCP connect. Without socket_timeout, a Redis call
+                # on an already-open-but-degraded connection could block forever.
+                socket_timeout=float(os.environ.get("REDIS_SOCKET_TIMEOUT", "10")),
             )
             self.redis_client.ping()
-            print("[MARKET CLIENT] Redis connected")
+            _market_log.info("MARKET_REDIS_CONNECTED")
         except Exception as e:
-            print("[MARKET CLIENT] Redis NOT available:", e)
+            _market_log.warning("MARKET_REDIS_UNAVAILABLE error=%s", e)
             self.redis_client = None
 
     def _load_access_token(self):
@@ -266,7 +275,7 @@ class MarketClient:
         ticker_key = ticker.replace(".NS", "").upper()
         symbol_code = self.ticker_map.get(ticker_key)
         if not symbol_code:
-            print(f"[Upstox] Missing instrument key for {ticker_key}")
+            _market_log.warning("UPSTOX_MISSING_INSTRUMENT ticker=%s", ticker_key)
             return None
 
         symbol_code = quote(symbol_code, safe="")
@@ -298,7 +307,7 @@ class MarketClient:
             res = requests.get(url, headers=headers, params=params, timeout=15)
 
         if res.status_code != 200:
-            print(f"[Upstox] API error: {res.status_code} - {res.text}")
+            _market_log.warning("UPSTOX_API_ERROR status=%s", res.status_code)
             return None
 
         candles = res.json().get("data", {}).get("candles", [])
