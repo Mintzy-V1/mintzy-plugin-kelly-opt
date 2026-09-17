@@ -1,5 +1,7 @@
 """EOD idempotency helpers and session-scoped exit preparation."""
 import os
+
+from core.logging import get_logger
 import threading
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
@@ -9,9 +11,10 @@ from utils.session_ledger import (
 )
 
 
+_slog = get_logger("SESSION")
+
 def log_eod_config() -> None:
-    print(
-        "[EOD-CONFIG] "
+    _slog.info(
         f"EXIT_ONLY_SESSION_SYMBOLS={os.environ.get('EXIT_ONLY_SESSION_SYMBOLS', 'true')} "
         f"EOD_USE_SESSION_LEDGER={os.environ.get('EOD_USE_SESSION_LEDGER', 'true')} "
         f"EOD_STRICT_REDIS_META={os.environ.get('EOD_STRICT_REDIS_META', 'false')}"
@@ -36,10 +39,10 @@ def try_begin_eod_exit(trader) -> str:
     _ensure_eod_state(trader)
     with trader._eod_exit_lock:
         if trader._eod_exit_done:
-            print("[EOD] Square-off already completed — skipping duplicate exit")
+            _slog.info("Square-off already completed — skipping duplicate exit")
             return "done"
         if trader._eod_exit_in_progress:
-            print("[EOD] Square-off already in progress — will retry later")
+            _slog.info("Square-off already in progress — will retry later")
             return "busy"
         trader._eod_exit_in_progress = True
         return "proceed"
@@ -71,7 +74,7 @@ def finalize_eod_shutdown(
             try:
                 positions.clear()
             except Exception as e:
-                print(f"[EOD] positions clear failed: {e}")
+                _slog.info(f"positions clear failed: {e}")
 
         lock = getattr(trader, "_session_open_qty_lock", None)
         ledger = getattr(trader, "_session_open_qty", None)
@@ -80,13 +83,13 @@ def finalize_eod_shutdown(
                 with lock:
                     ledger.clear()
             except Exception as e:
-                print(f"[EOD] session ledger clear failed: {e}")
+                _slog.info(f"session ledger clear failed: {e}")
 
     if sync_broker and hasattr(trader, "_sync_cash_with_broker"):
         try:
             trader._sync_cash_with_broker()
         except Exception as e:
-            print(f"[EOD] broker sync failed: {e}")
+            _slog.info(f"broker sync failed: {e}")
 
 
 def prepare_eod_exit_plan(
@@ -116,7 +119,7 @@ def prepare_eod_exit_plan(
             "EOD CRITICAL: session ledger has open qty but exit plan is empty "
             "(broker flat / allow-list mismatch) — will retry"
         )
-        print(f"[EOD] {msg}")
+        _slog.info(f"{msg}")
         return [], False, msg
 
     return [], True, "No session positions to exit"

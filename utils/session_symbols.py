@@ -1,6 +1,8 @@
 """Session-scoped symbol helpers for EOD exit (Redis meta + broker position filter)."""
 import json
 import os
+
+from core.logging import get_logger
 from typing import Any, Callable, Dict, List, Optional, Set
 
 from utils.redis_keys import (
@@ -9,6 +11,8 @@ from utils.redis_keys import (
     session_symbols_traded_key,
 )
 
+
+_slog = get_logger("SESSION")
 
 def normalize_symbol(sym: str) -> str:
     return (sym or "").upper().replace("-EQ", "").strip()
@@ -42,7 +46,7 @@ def _symbols_traded_from_redis(redis_client, session_id: str) -> Set[str]:
             return set()
         return {normalize_symbol(m) for m in members if m}
     except Exception as e:
-        print(f"[EOD] symbols_traded read failed: {e}")
+        _slog.info(f"symbols_traded read failed: {e}")
         return set()
 
 
@@ -55,11 +59,11 @@ def get_session_symbols_from_redis(
     fallback = _merge_symbol_fallbacks(fallback_symbols, ledger_symbols)
 
     if not session_id:
-        print("[EOD] No session_id — cannot load session symbols from Redis")
+        _slog.info("No session_id — cannot load session symbols from Redis")
         return fallback
 
     if redis_client is None:
-        print("[EOD] No redis_client — using fallback symbol sources")
+        _slog.info("No redis_client — using fallback symbol sources")
         return fallback
 
     traded = _symbols_traded_from_redis(redis_client, session_id)
@@ -68,8 +72,8 @@ def get_session_symbols_from_redis(
     try:
         raw = redis_client.get(session_meta_key(session_id))
         if not raw:
-            print(
-                f"[EOD] Redis meta missing for {session_id} — "
+            _slog.info(
+                f"Redis meta missing for {session_id} — "
                 "using fallback + symbols_traded"
             )
             return merged_with_traded if merged_with_traded else fallback
@@ -79,19 +83,19 @@ def get_session_symbols_from_redis(
         normalized = {normalize_symbol(s) for s in symbols if s}
         if normalized:
             result = normalized | traded
-            print(
-                f"[EOD] Session symbols from Redis ({session_id}): "
+            _slog.info(
+                f"Session symbols from Redis ({session_id}): "
                 f"{sorted(result)}"
             )
             return result
 
-        print(
-            f"[EOD] Redis meta has no symbols for {session_id} — "
+        _slog.info(
+            f"Redis meta has no symbols for {session_id} — "
             "using fallback + symbols_traded"
         )
         return merged_with_traded if merged_with_traded else fallback
     except Exception as e:
-        print(f"[EOD] Redis meta read failed: {e} — using fallback symbol sources")
+        _slog.info(f"Redis meta read failed: {e} — using fallback symbol sources")
         return merged_with_traded if merged_with_traded else fallback
 
 
@@ -103,7 +107,7 @@ def filter_broker_positions_for_session(
     on_skip: Optional[Callable[[str], None]] = None,
 ) -> List[Dict[str, Any]]:
     if not exit_only_session_symbols_enabled():
-        print("[EOD] EXIT_ONLY_SESSION_SYMBOLS=false — exiting ALL broker positions (legacy)")
+        _slog.info("EXIT_ONLY_SESSION_SYMBOLS=false — exiting ALL broker positions (legacy)")
         return list(broker_positions or [])
 
     allowed = get_session_symbols_from_redis(
@@ -112,8 +116,8 @@ def filter_broker_positions_for_session(
         fallback_symbols=fallback_symbols,
     )
     if not allowed:
-        print(
-            "[EOD] No session symbols resolved — filter returns nothing "
+        _slog.info(
+            "No session symbols resolved — filter returns nothing "
             "(use build_eod_exit_plan for ledger-aware EOD)"
         )
         return []
@@ -127,18 +131,18 @@ def filter_broker_positions_for_session(
         else:
             skipped += 1
             label = pos.get("symbol", sym)
-            print(
-                f"[EOD] SKIP {label} — not in session symbol list "
+            _slog.info(
+                f"SKIP {label} — not in session symbol list "
                 "(manual/other app position)"
             )
             if on_skip:
                 try:
                     on_skip(label)
                 except Exception as e:
-                    print(f"[EOD] on_skip callback failed: {e}")
+                    _slog.info(f"on_skip callback failed: {e}")
 
-    print(
-        f"[EOD] Broker positions={len(broker_positions or [])} "
+    _slog.info(
+        f"Broker positions={len(broker_positions or [])} "
         f"exit={len(to_exit)} skip={skipped}"
     )
     return to_exit

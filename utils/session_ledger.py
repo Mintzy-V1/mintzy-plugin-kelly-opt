@@ -1,5 +1,7 @@
 """Engine-attributed position ledger for session-scoped EOD exit."""
 import os
+
+from core.logging import get_logger
 from typing import Any, Callable, Dict, List, Optional, Set
 
 from utils.redis_keys import SESSION_REDIS_TTL, session_order_ids_key
@@ -22,6 +24,8 @@ EXIT_ACTIONS = frozenset({
 })
 
 
+_slog = get_logger("SESSION")
+
 def eod_use_session_ledger_enabled() -> bool:
     return os.environ.get("EOD_USE_SESSION_LEDGER", "true").lower() in (
         "1",
@@ -43,7 +47,7 @@ def record_engine_order(
         redis_client.sadd(key, str(order_id))
         redis_client.expire(key, ttl)
     except Exception as e:
-        print(f"[SESSION-LEDGER] order_id record failed: {e}")
+        _slog.info(f"order_id record failed: {e}")
 
 
 def record_symbol_traded(
@@ -63,7 +67,7 @@ def record_symbol_traded(
         redis_client.sadd(key, sym)
         redis_client.expire(key, ttl)
     except Exception as e:
-        print(f"[SESSION-LEDGER] symbols_traded record failed: {e}")
+        _slog.info(f"symbols_traded record failed: {e}")
 
 
 def get_trader_session_id(trader) -> Optional[str]:
@@ -166,8 +170,8 @@ def apply_fill_to_session_ledger(
         current = int(ledger.get(sym, 0) or 0)
         new_qty = _compute_ledger_qty_after_fill(current, fill_qty, action_type, side)
         if new_qty is None:
-            print(
-                f"[SESSION-LEDGER] {sym} action={action_type} side={side or '-'} "
+            _slog.info(
+                f"{sym} action={action_type} side={side or '-'} "
                 f"fill={fill_qty} skipped — unknown fill side"
             )
             return
@@ -175,8 +179,8 @@ def apply_fill_to_session_ledger(
             ledger.pop(sym, None)
         else:
             ledger[sym] = new_qty
-        print(
-            f"[SESSION-LEDGER] {sym} action={action_type} side={side or '-'} "
+        _slog.info(
+            f"{sym} action={action_type} side={side or '-'} "
             f"fill={fill_qty} before={current} after={new_qty}"
         )
 
@@ -265,15 +269,15 @@ def build_eod_exit_plan(
         allowed = {
             normalize_symbol(s) for s in ledger.keys() if int(ledger.get(s, 0) or 0) != 0
         }
-        print(
-            f"[EOD] Allow-list empty but ledger open — using ledger keys: "
+        _slog.info(
+            f"Allow-list empty but ledger open — using ledger keys: "
             f"{sorted(allowed)}"
         )
         if on_skip_summary:
             try:
                 on_skip_summary(0, [], "ledger_fallback")
             except Exception as e:
-                print(f"[EOD] on_skip_summary callback failed: {e}")
+                _slog.info(f"on_skip_summary callback failed: {e}")
 
     plan: List[Dict[str, Any]] = []
 
@@ -289,15 +293,15 @@ def build_eod_exit_plan(
 
             if sym not in allowed:
                 if ledger_qty != 0:
-                    print(
-                        f"[EOD-SKIP] {sym} ledger={ledger_qty} — not in session allow-list"
+                    _slog.info(
+                        f"{sym} ledger={ledger_qty} — not in session allow-list"
                     )
                 continue
 
             if ledger_qty == 0:
                 if broker_qty > 0:
-                    print(
-                        f"[EOD-SKIP] {sym} broker_net={broker_qty} ledger=0 "
+                    _slog.info(
+                        f"{sym} broker_net={broker_qty} ledger=0 "
                         "(manual/other on session symbol)"
                     )
                     skipped_manual_on_session_symbol.append(sym)
@@ -313,14 +317,14 @@ def build_eod_exit_plan(
                 ledger_abs = abs(ledger_qty)
 
             if broker_qty <= 0:
-                print(
-                    f"[EOD-WARN] {sym} ledger={ledger_qty} broker_net=0 — skip over-sell"
+                _slog.warning(
+                    f"{sym} ledger={ledger_qty} broker_net=0 — skip over-sell"
                 )
                 continue
 
             if broker_side != expected_broker_side:
-                print(
-                    f"[EOD-WARN] {sym} ledger={ledger_qty} broker_side={broker_side} "
+                _slog.warning(
+                    f"{sym} ledger={ledger_qty} broker_side={broker_side} "
                     f"expected={expected_broker_side} — side mismatch, skip"
                 )
                 continue
@@ -338,8 +342,8 @@ def build_eod_exit_plan(
                 "ledger_qty": ledger_qty,
                 "broker_qty": broker_qty,
             })
-            print(
-                f"[EOD-PLAN] {sym} allowed=Y ledger={ledger_qty} "
+            _slog.info(
+                f"{sym} allowed=Y ledger={ledger_qty} "
                 f"broker_net={broker_qty} ({broker_side}) exit_qty={exit_qty} "
                 f"exit_side={exit_side}"
             )
@@ -352,7 +356,7 @@ def build_eod_exit_plan(
                     "ledger_zero",
                 )
             except Exception as e:
-                print(f"[EOD] on_skip_summary callback failed: {e}")
+                _slog.info(f"on_skip_summary callback failed: {e}")
         return plan
 
     for sym in sorted(allowed):
