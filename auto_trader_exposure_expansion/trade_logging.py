@@ -1,0 +1,142 @@
+"""AutoTrader mixin: trade/portfolio CSV logging and final tradebook merge.
+Moved verbatim from auto_trader_exposure_expansion.py during the package split;
+no logic changes.
+"""
+import csv
+import os
+import time
+
+import pandas as pd
+
+
+class TradeLoggingMixin:
+
+        
+    # ---------- LOGGING ----------
+    def _log_portfolio_action(self, symbol, action, qty, entry_price, exit_price, pnl):
+        cumulative_pnl = self.realized_pnl
+        portfolio_return = (cumulative_pnl / self.initial_capital) * 100
+        trade_return = (pnl / (entry_price * qty)) * 100 if entry_price * qty else 0.0
+        with open(self.portfolio_log, "a", newline="") as f:
+            writer = csv.writer(f)
+            writer.writerow([
+                self._now_market_time().strftime("%Y-%m-%d %H:%M:%S"),
+                symbol, action, qty,
+                f"{entry_price:.2f}", f"{exit_price:.2f}", f"{pnl:.2f}",
+                f"{cumulative_pnl:.2f}", f"{self.current_capital:.2f}",
+                f"{trade_return:.2f}", f"{portfolio_return:.2f}"
+            ])
+
+    def _log_trade(self, symbol, signal, change, status, price, qty, pnl):
+
+        #  Always use live price from redis cache as price source
+
+        # live = self._get_live_price_redis(symbol, getattr(self, "_current_candle", "5m"))
+        
+        live = getattr(self, "_cycle_ltp_cache", {}).get(symbol)
+
+
+        if live is not None and live > 0:
+            price = float(live)
+        elif price is None or price <= 0:
+            price = 0.0
+
+        #  Calculate live unrealized PnL from cache if not explicitly passed
+        if pnl == 0.0 and price > 0 and status in ("hold", "pending", "wait"):
+            unrealized = self._calculate_pnl(symbol, price)
+        else:
+            unrealized = pnl
+
+        candle_time = getattr(self, "current_cycle_ts_str", None)
+        if not candle_time:
+            candle_time = self._now_market_time().strftime("%Y-%m-%d %H:%M:%S")
+
+        logged_at = self._now_market_time().strftime("%Y-%m-%d %H:%M:%S")
+
+        total_equity = round(self.cash_balance + self.unrealized_pnl, 2)
+        portfolio_return = round(
+            ((total_equity - self.initial_capital) / self.initial_capital) * 100, 4
+        ) if self.initial_capital else 0.0
+
+        log_entry = {
+            "time": candle_time,
+            "logged_at": logged_at,
+            "symbol": symbol,
+            "signal": signal,
+            "change_pct": round(change, 6),
+            "status": status,
+            "price": price,
+            "qty": qty,
+            "pnl": round(unrealized, 2),
+            "cash_balance": round(self.cash_balance, 2),
+            "realized_pnl": round(self.realized_pnl, 2),
+            "total_equity": total_equity,
+        }
+
+        self.trade_history.append(log_entry)
+
+        #  WRITE TO CSV IMMEDIATELY  bar by bar, every cycle
+        try:
+            with open(self.log_path, "a", newline="") as f:
+                writer = csv.writer(f)
+                writer.writerow([
+                    candle_time,
+                    symbol,
+                    signal,
+                    round(change, 6),
+                    status,
+                    price,
+                    qty,
+                    round(unrealized, 2),
+                    round(self.cash_balance, 2),
+                    round(self.realized_pnl, 2),
+                    total_equity,
+                    portfolio_return
+                ])
+        except Exception as e:
+            print(f"[CSV ERROR] Trade log append failed: {e}")
+    
+
+
+    
+    def _generate_final_merged_tradebook(self ,angel_orders=None) -> pd.DataFrame:
+        internal_df = pd.DataFrame(self.trade_history)
+        if not internal_df.empty:
+            internal_df["source"] = "internal"
+
+        try:
+            # resp = self.broker.get_order_book(self.session)
+            # if resp.get("status") == "success":
+            #     angel_df = pd.DataFrame(resp["raw"].get("data", []))
+            # else:
+            #     angel_df = pd.DataFrame()
+
+            # angel_df = pd.DataFrame(self.broker.orderBook())
+
+              angel_df = pd.DataFrame(angel_orders or [])
+        except Exception as e:
+            print(f"[ORDERBOOK] Fetch failed: {e}")
+            angel_df = pd.DataFrame()
+
+        if not angel_df.empty:
+            angel_df["source"] = "angel"
+
+        final_df = pd.concat(
+            [internal_df, angel_df],
+            ignore_index=True,
+            sort=False
+        )
+
+        date_str = self._now_market_time().strftime("%Y-%m-%d")
+        output_path = os.path.join(
+            self.log_dir,
+            f"final_tradebook_{date_str}.csv"
+        )
+
+        final_df.to_csv(output_path, index=False)
+
+        print(f"[EOD] Final tradebook saved: {output_path}")
+        self.alerts.notify(f"Final tradebook generated: {output_path}")
+
+        return final_df
+
