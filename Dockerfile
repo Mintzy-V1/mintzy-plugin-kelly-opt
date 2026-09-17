@@ -28,6 +28,11 @@ EXPOSE 8000
 HEALTHCHECK --interval=30s --timeout=10s --start-period=45s --retries=3 \
     CMD curl -fsS http://127.0.0.1:8000/api/health || exit 1
 
+# NOTE: with uvicorn.workers.UvicornWorker, gunicorn `--timeout` maps to uvicorn's
+# `timeout_notify` (worker heartbeat), NOT a per-request timeout. Long-running
+# requests (e.g. `?wait=true` stop-simulation) run to completion because all
+# blocking I/O is off the event loop (asyncio.to_thread). Keep `--timeout` well
+# above the longest blocking path so the heartbeat is never starved.
 CMD ["gunicorn", \
      "-w", "2", \
      "-k", "uvicorn.workers.UvicornWorker", \
