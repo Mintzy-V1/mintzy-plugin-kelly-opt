@@ -1,7 +1,7 @@
 
 import sys
-from client import Client
-from auto_trader import AutoTrader
+from client import PredictionClient, MarketClient
+from auto_trader_exposure_expansion_org import AutoTrader
 from alerts import AlertManager
 
 def ask_int(prompt, min_v=1, max_v=None):
@@ -95,9 +95,12 @@ def main():
     print("ðŸ“Œ Ensure your API credentials are set in environment variables or be ready to enter them.\n")
 
     # Initialize components
-    client = Client(api_key="XeyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9")
     alerts = AlertManager()
-    trader = AutoTrader(client=client, alerts=alerts)
+    trader = AutoTrader(
+        prediction_client=PredictionClient(api_key="XeyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9"),
+        market_client=MarketClient(),
+        alerts=alerts,
+    )
 
     # Link to broker and fetch free cash
     print("ðŸ”— Connecting to broker to read available cash/margin...\n")

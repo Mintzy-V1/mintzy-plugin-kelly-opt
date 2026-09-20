@@ -213,7 +213,7 @@ class LifecycleMixin:
             )
 
         # Parse session configuration
-        strategy = session_doc.get("strategy", "A")
+        strategy = session_doc.get("strategy", "C")
         raw_symbols = session_doc.get("symbols", [])
 
         symbols = []

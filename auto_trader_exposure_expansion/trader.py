@@ -811,69 +811,7 @@ class AutoTrader(
                             continue
                         
                         print(f"[DEBUG] risk_veto={risk_veto} sig={sig}")
-
-                        # # SCENARIO 6A: Trend Veto Exit LONG
-                        # if "SELL (Trend Veto Exit)" in sig:
-                        #     long_pos = next(
-                        #         (p for p in broker_positions if p["symbol"] == sym and p["side"] == "BUY"),
-                        #         None
-                        #     )
-
-                        #     if long_pos:
-                        #         print(f"[ORDER QUEUED] {sym} {sig} qty={qty}")
-
-                        #         order_batcher.add_order(
-                        #             OrderRequest(
-                        #                 sym,
-                        #                 "SELL",
-                        #                 long_pos["qty"],
-                        #                 metadata={
-                        #                     "signal": sig,
-                        #                     "change_pct": change_pct,
-                        #                     "action_type": "TREND_VETO_EXIT_LONG",
-                        #                     "curr_price": curr_price,
-                        #                     "side": "SELL",
-                        #                     "position_side": "BUY",
-                        #                     "qty": long_pos["qty"],
-                        #                     "order_value": curr_price * long_pos["qty"]
-                        #                 }
-                        #             ),
-                        #             "exit"
-                        #         )
-                        #         continue            
                             
-                        # # SCENARIO 6B: Trend Veto Exit SHORT
-                        # if "BUY (Trend Veto Exit)" in sig:
-                        #         short_pos = next(
-                        #             (p for p in broker_positions if p["symbol"] == sym and p["side"] == "SELL"),
-                        #             None
-                        #         )
-
-                        #         if short_pos:
-                        #             print(f"[ORDER QUEUED] {sym} {sig} qty={qty}")
-
-                        #             order_batcher.add_order(
-                        #                 OrderRequest(
-                        #                     sym,
-                        #                     "BUY",
-                        #                     short_pos["qty"],
-                        #                     metadata={
-                        #                         "signal": sig,
-                        #                         "change_pct": change_pct,
-                        #                         "action_type": "TREND_VETO_EXIT_SHORT",
-                        #                         "curr_price": curr_price,
-                        #                         "side": "BUY",
-                        #                         "position_side": "SELL",
-                        #                         "qty": short_pos["qty"],
-                        #                         "order_value": curr_price * short_pos["qty"]
-                        #                     }
-                        #                 ),
-                        #                 "exit"
-                        #             )
-                        #             continue
-                        
-                        print(f"[DEBUG] before OPEN LONG: symbol_action_taken={symbol_action_taken}")
-               
                         # SCENARIO 1: OPEN LONG
                         if sig == "BUY" and not has_broker_pos and sym not in self.pending_orders:
                             scenario_name = "BUY (Fresh Long Entry)"

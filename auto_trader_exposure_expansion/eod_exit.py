@@ -379,8 +379,6 @@ class EodExitMixin:
                     is_exit = action_type in {
                         "EXIT_LONG",
                         "COVER_SHORT",
-                        # "TREND_VETO_EXIT_LONG",
-                        # "TREND_VETO_EXIT_SHORT",
                         "STOP_LOSS",
                         "MARKET_CLOSE_EXIT"
                     }

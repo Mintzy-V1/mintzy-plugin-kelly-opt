@@ -8,7 +8,6 @@ from multiprocessing import Queue, Event
 from typing import Dict, Any, Optional
 from datetime import datetime
 
-from auto_trader import AutoTrader as AutoTraderA
 from auto_trader_exposure_expansion import AutoTrader as AutoTraderB
 from alerts import AlertManager
 from client import PredictionClient, MarketClient
@@ -116,7 +115,7 @@ def _trader_worker(
         exit_redis_client = getattr(market_client, 'redis_client', None)
 
         # Select trader class (C is lazy-imported so api_server boots even if org module differs on disk)
-        TRADER_MAP = {"A": AutoTraderA, "B": AutoTraderB}
+        TRADER_MAP = {"B": AutoTraderB}
         if strategy == "C":
             try:
                 from auto_trader_exposure_expansion_org import AutoTrader as AutoTraderC

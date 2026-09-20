@@ -28,7 +28,7 @@ class StockAllocation(BaseModel):
 
 class TradingConfig(BaseModel):
     session_id: str = Field(..., description="Active session ID")
-    strategy: str = "A"
+    strategy: str = "C"
     symbols: list[StockAllocation] = Field(..., min_length=1, max_length=25)
     time_frame: str = Field(default="3 hours", description="Prediction time frame")
     use_broker_cash: bool = Field(default=True, description="Use actual broker cash as capital")

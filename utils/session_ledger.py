@@ -95,14 +95,12 @@ _BUY_FILL_ACTIONS = frozenset({
     "EXPAND_LONG",
     "FLIP_TO_LONG",
     "COVER_SHORT",
-    "TREND_VETO_EXIT_SHORT",
 })
 _SELL_FILL_ACTIONS = frozenset({
     "OPEN_SHORT",
     "EXPAND_SHORT",
     "FLIP_TO_SHORT",
     "EXIT_LONG",
-    "TREND_VETO_EXIT_LONG",
     "SINGLE_EXIT",
 })
 

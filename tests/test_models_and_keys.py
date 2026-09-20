@@ -17,13 +17,13 @@ SID = "session_20260910123456_abc123"
 
 def test_trading_config_minimal():
     cfg = TradingConfig(session_id=SID, symbols=[StockAllocation(symbol="RELIANCE", capital=1000)])
-    assert cfg.strategy == "A"
+    assert cfg.strategy == "C"
     assert cfg.use_broker_cash is True
 
 
 def test_trading_config_strategy_default():
     cfg = TradingConfig(session_id=SID, symbols=[StockAllocation(symbol="TCS", capital=500)])
-    assert cfg.strategy == "A"
+    assert cfg.strategy == "C"
 
 
 def test_stock_allocation_stop_loss_default():

@@ -215,7 +215,7 @@ async def fetch_session_from_db(session_id: str) -> Optional[Dict[str, Any]]:
         "free_cash": doc.get("free_cash"),
         "created_at": doc.get("created_at"),
         "authenticated_at": doc.get("authenticated_at"),
-        "strategy": doc.get("strategy", "A"),
+        "strategy": doc.get("strategy", "C"),
         "configuration_id": doc.get("configuration_id"),
     }
 
