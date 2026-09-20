@@ -151,6 +151,11 @@ class AutoTrader(
         # qty locked at first entry per symbol  reused for entire session
         self.symbol_qty: dict = {}
 
+        # Held qty per symbol = broker-confirmed fill at entry (tradebook/order
+        # status value), tracked separately from symbol_qty (the intended target).
+        # Never recomputed from LTP. Used as the basis for exit quantity.
+        self._confirmed_fill_qty: dict = {}
+
         # ==================== PARALLEL EXECUTION SETUP ====================
         self.parallel_executor = None
         self.use_parallel_execution = True  # Set False to disable parallel execution
@@ -959,7 +964,7 @@ class AutoTrader(
                         # SCENARIO 3: EXIT LONG & REVERSE TO SHORT
                         if sig == "SELL" and has_broker_pos and broker_pos["side"] == "BUY" and sym not in self.pending_orders:
                             scenario_name = "SELL (Flip Long to Short)"
-                            qty = broker_pos["qty"]
+                            qty = self._confirmed_fill_qty.get(sym) or broker_pos["qty"]
                             inverted_qty = qty*2                 # EXIT LONG -> OPEN SHORT (same qty)
                             print(f"[ORDER QUEUED] {sym} {sig} qty={qty}")
 
@@ -985,7 +990,7 @@ class AutoTrader(
                         # SCENARIO 4: EXIT SHORT & REVERSE TO LONG
                         if sig == "BUY" and has_broker_pos and broker_pos["side"] == "SELL" and sym not in self.pending_orders:
                             scenario_name = "BUY (Flip Short to Long)"
-                            qty = broker_pos["qty"]
+                            qty = self._confirmed_fill_qty.get(sym) or broker_pos["qty"]
                             inverted_qty = qty*2                # EXIT SHORT -> OPEN LONG (same qty)
                             print(f"[ORDER QUEUED] {sym} {sig} qty={qty}")
                     
@@ -1170,6 +1175,7 @@ class AutoTrader(
                             
                             elif action_type == "OPEN_SHORT":
                                 action_taken = f"OPEN SHORT ORDER SENT ({filled_qty})"
+                                self._confirmed_fill_qty[sym] = int(filled_qty or 0)
                                 self._log_trade(
                                     sym,
                                     "OPEN_SHORT",
@@ -1216,6 +1222,7 @@ class AutoTrader(
                             
                             elif action_type == "OPEN_LONG":
                                 action_taken = f"OPEN LONG ORDER SENT ({filled_qty})"
+                                self._confirmed_fill_qty[sym] = int(filled_qty or 0)
                                 self._log_trade(
                                     sym,
                                     "OPEN_LONG",
