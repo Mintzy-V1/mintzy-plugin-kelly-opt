@@ -8,87 +8,72 @@ from utils.session_ledger import (
 
 
 class OrderFillMixin:
-    def _get_fill_price_from_orderbook(self, order_id, symbol):
+    def _get_fill_details_from_orderbook(self, order_id, symbol):
+        """Return (filled_qty, avg_price) for an engine order, keyed by order_id.
+
+        This is the only broker-specific surface for fill attribution: the order
+        book reports OUR order's real filledshares + averageprice, so the signed
+        session ledger is fed with actual fills, never intended (capital/LTP) qty.
+        """
         try:
             ob = self.session["obj"].orderBook()
 
             if not isinstance(ob, dict):
-                return 0.0
+                return 0, 0.0
             if not ob.get("status"):
-                return 0.0
+                return 0, 0.0
 
             orders = ob.get("data", [])
             if not isinstance(orders, list):
-                return 0.0
+                return 0, 0.0
 
             for order in orders:
                 if str(order.get("orderid")) != str(order_id):
                     continue
 
-                #  Pehle orderstatus check karo
-                order_status = order.get("orderstatus", "").lower()
+                order_status = str(order.get("orderstatus", "")).lower()
 
-                if order_status == "cancelled":
-                    print(f"[FILL PRICE] {symbol}: order {order_id} CANCELLED hai  fill price nahi milegi")
-                    return 0.0
-
-                if order_status == "rejected":
-                    print(f"[FILL PRICE] {symbol}: order {order_id} REJECTED hai  fill price nahi milegi")
-                    return 0.0
+                if order_status in ("cancelled", "rejected"):
+                    print(f"[FILL DETAILS] {symbol}: order {order_id} {order_status}  no fill")
+                    return 0, 0.0
 
                 if order_status not in ("complete", "filled"):
-                    # open, pending, trigger pending etc.
-                    print(f"[FILL PRICE] {symbol}: order {order_id} abhi {order_status} hai  wait karo")
-                    return 0.0
+                    print(f"[FILL DETAILS] {symbol}: order {order_id} abhi {order_status}  wait karo")
+                    return 0, 0.0
 
-                #  Order complete hai  ab averageprice lo
-                # fill_price = float(order.get("averageprice") or 0.0)
-
-                #  Order complete hai  ab averageprice lo
-                # fill_price = float(order.get("price") or 0.0)
-                # avg_price_field = float(order.get("averageprice") or 0.0)
-
-                #  averageprice = actual execution price (AngelOne dashboard bhi yahi use karta hai)
+                filled_shares = int(order.get("filledshares") or 0)
                 avg_price_field = float(order.get("averageprice") or 0.0)
                 fill_price = float(order.get("price") or 0.0)
-            
+                avg_price = avg_price_field if avg_price_field > 0 else fill_price
+
                 print(
-                    f"[FILL PRICE] {symbol}: order {order_id} | "
-                    f"price={fill_price:.2f} | averageprice={avg_price_field:.2f}"
+                    f"[FILL DETAILS] {symbol}: order {order_id} | "
+                    f"filledshares={filled_shares} | averageprice={avg_price:.2f}"
                 )
 
-                #  filledshares bhi check karo
-                filled_shares = int(order.get("filledshares") or 0)
+                if filled_shares > 0 and avg_price > 0:
+                    return filled_shares, avg_price
 
-                # if fill_price > 0 and filled_shares > 0:
-                #         print(f"[FILL PRICE] {symbol}: order {order_id} complete @ Rs {fill_price:.2f} (price field) | averageprice=Rs {avg_price_field:.2f} ({filled_shares} shares)")
-                #         return fill_price
-                # elif avg_price_field > 0 and filled_shares > 0:
-                #         print(f"[FILL PRICE] {symbol}: price=0 fallback to averageprice=Rs {avg_price_field:.2f}")
-                #         return avg_price_field
-                # else:
-                #         print(f"[FILL PRICE] {symbol}: order complete but both price=0 and averageprice=0 or filledshares=0")
-                #         return 0.0
-                if avg_price_field > 0 and filled_shares > 0:
-                    print(f"[FILL PRICE] {symbol}: averageprice=Rs {avg_price_field:.2f} ({filled_shares} shares)")
-                    return avg_price_field
-                elif fill_price > 0 and filled_shares > 0:
-                    print(f"[FILL PRICE] {symbol}: averageprice=0, fallback to price=Rs {fill_price:.2f}")
-                    return fill_price
-                else:
-                    print(f"[FILL PRICE] {symbol}: both 0 or filledshares=0")
-                    return 0.0
+                print(f"[FILL DETAILS] {symbol}: order {order_id} complete but price/qty missing")
+                return 0, 0.0
 
-            print(f"[FILL PRICE] {symbol}: order {order_id} order book mein nahi mila")
-            return 0.0
+            print(f"[FILL DETAILS] {symbol}: order {order_id} order book mein nahi mila")
+            return 0, 0.0
 
         except Exception as e:
-            print(f"[FILL PRICE ERROR] {symbol}: {e}")
-            return 0.0   
+            print(f"[FILL DETAILS ERROR] {symbol}: {e}")
+            return 0, 0.0
+
+    def _get_fill_price_from_orderbook(self, order_id, symbol):
+        """Back-compat wrapper returning just the avg fill price."""
+        _, avg_price = self._get_fill_details_from_orderbook(order_id, symbol)
+        return avg_price   
 
     def _track_engine_fill(self, symbol, broker_pos, ctx) -> None:
         record_engine_order_for_trader(self, ctx.get("order_id"))
-        fill_qty = int(ctx.get("qty") or broker_pos.get("qty", 0) or 0)
+        # Feed the signed ledger with the ACTUAL broker-confirmed fill (carried in
+        # broker_pos["qty"] by the reconciler), never the intended capital/LTP qty.
+        fill_qty = int(broker_pos.get("qty") or ctx.get("qty") or 0)
         apply_fill_to_session_ledger(
             self,
             symbol,
@@ -96,6 +81,26 @@ class OrderFillMixin:
             ctx.get("action_type", ""),
             side=ctx.get("side") or broker_pos.get("side") or "",
         )
+
+    def _own_open_qty(self, symbol: str) -> int:
+        """Signed qty this engine actually holds (from order-confirmed fills)."""
+        from utils.session_symbols import normalize_symbol
+
+        sym = normalize_symbol(symbol)
+        return int((self._session_open_qty or {}).get(sym, 0) or 0)
+
+    def _exit_qty_for(self, symbol: str, broker_qty) -> int:
+        """exit_qty = min(|own ledger qty|, broker qty).
+
+        Never exits more than the engine actually opened (manual qty on the same
+        symbol is untouched), and never more than the broker actually holds.
+        Falls back to broker qty when the ledger is empty (paper mode / feature
+        disabled), preserving old behavior.
+        """
+        own = self._own_open_qty(symbol)
+        if own == 0:
+            return int(broker_qty or 0)
+        return max(0, min(abs(own), int(broker_qty or 0)))
 
     # ------- HANDLE FILLED -------- 
 
@@ -288,22 +293,24 @@ class OrderFillMixin:
                     # FLIP HANDLING (NETTED POSITIONS CHANGE)
                     # ----------------------------------------
                     if is_flip:
+                        actual_qty = 0
                         exit_price = 0.0
                         if order_id:
                             check_ts = datetime.now()
                             print(f"[DEBUG-RECONCILE] [{check_ts.strftime('%H:%M:%S.%f')[:-3]}] Checking flip pending order_id {order_id} for {sym}")
-                            exit_price = self._get_fill_price_from_orderbook(order_id, sym)
+                            actual_qty, exit_price = self._get_fill_details_from_orderbook(order_id, sym)
                         
                         if exit_price <= 0:
                             print(f"[DEBUG-RECONCILE] Flip Order {order_id} not executed yet. Retaining in pending list.")
                             continue
                             
                         # If executed, definitively call handle_filled
+                        fill_qty = actual_qty if actual_qty > 0 else expected_qty
                         self._handle_filled(
                             sym,
                             {
                                 "side": "BUY" if "LONG" in action_type else "SELL",
-                                "qty": expected_qty,
+                                "qty": fill_qty,
                                 "avg_price": exit_price,
                             },
                             ctx,
@@ -339,15 +346,20 @@ class OrderFillMixin:
 
                     if pos:
                         # ---- FILLED (or partially filled) ----
-                        filled_qty = min(broker_qty, expected_qty)
+                        # Prefer the orderbook's real filled_qty for THIS order_id
+                        # over the intended expected_qty (corrects 99/101-vs-100 drift).
+                        actual_qty = 0
+                        ob_avg = 0.0
+                        if order_id:
+                            actual_qty, ob_avg = self._get_fill_details_from_orderbook(order_id, sym)
+                        filled_qty = min(actual_qty, broker_qty) if actual_qty > 0 else min(broker_qty, expected_qty)
                         avg_price = float(pos.get("avg_price") or 0.0)
 
-                        if avg_price <= 0 and order_id:
-                            avg_price = self._get_fill_price_from_orderbook(order_id, sym)
-                            if avg_price > 0:
-                                print(f"[RECONCILE] {sym}: avg_price order book se mili Rs {avg_price:.2f}")
-                            else:
-                                print(f"[RECONCILE] {sym}: avg_price abhi bhi 0  next cycle mein retry hoga")
+                        if avg_price <= 0 and ob_avg > 0:
+                            avg_price = ob_avg
+                            print(f"[RECONCILE] {sym}: avg_price order book se mili Rs {avg_price:.2f}")
+                        elif avg_price <= 0:
+                            print(f"[RECONCILE] {sym}: avg_price abhi bhi 0  next cycle mein retry hoga")
 
                         self._handle_filled(
                             sym,
@@ -382,10 +394,11 @@ class OrderFillMixin:
 
                         if not still_exists:
                             exit_price = 0.0
+                            actual_qty = 0
                             if order_id:
                                 check_ts = datetime.now()
                                 print(f"[DEBUG-RECONCILE] [{check_ts.strftime('%H:%M:%S.%f')[:-3]}] Checking pending order_id {order_id} for {sym}")
-                                exit_price = self._get_fill_price_from_orderbook(order_id, sym)
+                                actual_qty, exit_price = self._get_fill_details_from_orderbook(order_id, sym)
                                 ret_ts = datetime.now()
                                 print(f"[DEBUG-RECONCILE] [{ret_ts.strftime('%H:%M:%S.%f')[:-3]}] Orderbook API returned exit_price: {exit_price} for {sym} (order_id {order_id})")
 
@@ -394,11 +407,12 @@ class OrderFillMixin:
                                 print(f"[DEBUG-RECONCILE] Order {order_id} not executed yet. Retaining in pending list.")
                                 continue
 
+                            fill_qty = actual_qty if actual_qty > 0 else expected_qty
                             self._handle_filled(
                                 sym,
                                 {
                                     "side": expected_side,
-                                    "qty": expected_qty,
+                                    "qty": fill_qty,
                                     "avg_price": exit_price  # price already realized
                                 },
                                 ctx

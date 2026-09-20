@@ -280,7 +280,7 @@ class EodExitMixin:
                 return {"success": False, "symbol": symbol, "message": msg}
 
             side = target_pos["side"]
-            qty = target_pos["qty"]
+            qty = self._exit_qty_for(symbol, target_pos["qty"])
             curr_price = target_pos.get("ltp", 0.0)
             exit_side = "SELL" if side == "BUY" else "BUY"
             exit_reason = exit_reason or ("STOP_LOCK_EXIT" if log_signal == "STOP_LOCK" else "MANUAL_EXIT")
