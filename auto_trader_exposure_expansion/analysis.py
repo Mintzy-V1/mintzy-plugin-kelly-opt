@@ -20,6 +20,16 @@ class AnalysisMixin:
         if broker_cash is not None:
             return broker_cash
 
+        session_free = getattr(self, "session_free_cash", None)
+        if session_free is not None:
+            try:
+                parsed = float(session_free)
+                if parsed >= 0:
+                    print(f"[INFO] Using session_free_cash fallback: {parsed:,.2f}")
+                    return parsed
+            except (TypeError, ValueError):
+                pass
+
         free_cash = float(self.cash_balance)
         print(f"[INFO] Paper ledger cash (broker RMS unavailable): {free_cash:,.2f}")
         return free_cash

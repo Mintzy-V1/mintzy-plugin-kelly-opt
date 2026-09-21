@@ -206,18 +206,31 @@ class ExposureRiskMixin:
 
     # ---------- CASH / BALANCE ----------
 
+    def _session_free_cash_fallback(self):
+        """Fall back to the auth-time broker free_cash when live RMS is unavailable."""
+        session_free = getattr(self, "session_free_cash", None)
+        if session_free is not None:
+            try:
+                parsed = float(session_free)
+                if parsed >= 0:
+                    print(f"[INFO] Using session_free_cash fallback: {parsed:,.2f}")
+                    return parsed
+            except (TypeError, ValueError):
+                pass
+        return None
+
     def _get_free_cash(self):
         try:
             bal = self.broker.get_account_balance(self.session)
         except Exception as e:
             self.alerts.notify(f"Failed to fetch account balance: {e}")
-            return None
+            return self._session_free_cash_fallback()
 
         if not isinstance(bal, dict) or bal.get("status") != "success":
             self.alerts.notify(
                 f"Could not read account balance: {bal.get('error') if isinstance(bal, dict) else bal}"
             )
-            return None
+            return self._session_free_cash_fallback()
 
         if "free_cash" in bal:
             try:
@@ -290,7 +303,7 @@ class ExposureRiskMixin:
             free_cash = None
 
         print(f"[ERROR] Could not extract free cash from response. Available keys: {list(bal.keys())}")
-        return free_cash
+        return self._session_free_cash_fallback()
 
     def _sync_cash_with_broker(self):
         print("[SYNC] Syncing cash balance with broker...")

@@ -1,0 +1,22 @@
+name: Deploy to VM + S3
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  test-and-deploy:
+    runs-on: [self-hosted, vm]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Run tests
+        run: |
+          set -e
+          PY=/home/admin/mintzy-plugin/venv/bin/python
+          "$PY" -m pytest tests/ -q
+
+      - name: Deploy to VM + S3
+        run: bash scripts/deploy.sh "$PWD"

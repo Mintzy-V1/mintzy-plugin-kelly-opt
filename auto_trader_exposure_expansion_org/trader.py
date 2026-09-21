@@ -47,7 +47,7 @@ class AutoTrader(
     LoggingMixin,
 ):
     def __init__(self, prediction_client, market_client, broker=None, alerts=None,
-                 initial_capital=196000,
+                 initial_capital=None,
                  get_access_token=None,
                  log_dir=None,
                  trading_logs_collection=None):
@@ -56,9 +56,9 @@ class AutoTrader(
         self.market_client = market_client
         self.broker = broker
         self.alerts = alerts if alerts is not None else AlertManager()
-        self.initial_capital = initial_capital
-        self.current_capital = initial_capital
-        self.cash_balance = initial_capital
+        self.initial_capital = initial_capital if initial_capital is not None else 0.0
+        self.current_capital = self.initial_capital
+        self.cash_balance = self.initial_capital
         self.get_access_token = get_access_token
         self.trading_logs_collection = trading_logs_collection
         self.config_db_name = os.environ.get("MONGO_CONFIG_DB_NAME", "test")
