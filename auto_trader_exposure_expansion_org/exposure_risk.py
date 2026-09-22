@@ -33,6 +33,7 @@ class ExposureRiskMixin:
     def _reserved_exposure(self, symbol):
         return self.reserved_exposure.get(symbol, 0.0)
 
+    @staticmethod
     def _coerce_leverage_multiplier(value, source: str = "") -> Optional[float]:
         if value is None:
             return None
