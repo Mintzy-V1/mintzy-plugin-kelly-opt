@@ -201,5 +201,6 @@ class AnalysisMixin:
 
         return round(pnl, 2)
 
+    @staticmethod
     def _normalize_config_symbol(symbol: str) -> str:
         return (symbol or "").upper().replace("-EQ", "").strip()
