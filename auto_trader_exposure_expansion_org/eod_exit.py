@@ -24,7 +24,7 @@ class EodExitMixin:
             return False
 
         try:
-            angel_orders = fetch_todays_intraday_orders(self.broker)
+            angel_orders = fetch_todays_intraday_orders()
             self._generate_final_merged_tradebook(angel_orders=angel_orders)
         except Exception as e:
             print(f"[EOD MERGE ERROR] {e}")
