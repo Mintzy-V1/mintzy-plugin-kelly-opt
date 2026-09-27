@@ -15,7 +15,7 @@ from trading_state import trading_snapshot
 
 print("TRADER snapshot id:", id(trading_snapshot))
 
-from .constants import MARKET_TZ, MARKET_EXIT_TIME, MARKET_EXIT_WARN_TIME, STOP_LOCK_TIME
+from .constants import MARKET_TZ, MARKET_EXIT_TIME, MARKET_EXIT_WARN_TIME
 from .timing import TimingLogger
 from .async_csv_logger import AsyncCsvLogger
 from .order_execution import OrderRequest, OrderBatcher
@@ -104,7 +104,6 @@ class AutoTrader(
         self.trade_history = []
         self.stop_event = threading.Event()
         self._exit_warning_sent = False
-        self._stoplock_done = False
         self._eod_exit_done = False
         self._eod_exit_in_progress = False
         self._eod_exit_lock = threading.Lock()
@@ -155,23 +154,10 @@ class AutoTrader(
              "Unrealized", "Threshold", "Action"],
         )
 
-        # Per-ticker RMS layer (independent of portfolio-level RMS).
-        # Trips when gross PnL (realized + unrealized) <= -(1% of entry_price * qty).
-        # self.rms_per_ticker_loss_per_share = 9.8
-        self.rms_per_ticker_loss_pct = 0.01
-        self._rms_exit_inflight: set = set()
-
-        # Tick-driven portfolio RMS  uses the SAME rms_loss_limit set by the
-        # existing cycle-level path; only the trigger source differs (live ticks
-        # vs end-of-cycle aggregation). Dedup flag distinct from rms_triggered.
-        self._live_portfolio_rms_inflight = False
-
         # Diagnostics for tick-flow visibility (throttled).
         self._tick_first_seen_in_trader: set = set()
         self._last_portfolio_print_ts = 0.0
         self._portfolio_print_interval_sec = 30.0
-        self._last_per_ticker_print_ts: dict = {}    # per-symbol last print
-        self._per_ticker_print_interval_sec = 30.0
         if not os.path.exists(self.live_pnl_log):
             with open(self.live_pnl_log, "w", newline="") as f:
                 csv.writer(f).writerow(
@@ -294,15 +280,10 @@ class AutoTrader(
                 for sym, alloc in initial_allocations.items()
             }
 
-        # RMS loss limit based on total capital allocated across all symbols
-        total_allocated = sum(a["capital"] for a in self.symbol_allocations.values()) if self.symbol_allocations else self.initial_capital
-        # self.rms_loss_limit = -(2303.0 / 1_000_000) * total_allocated
-        self.rms_loss_limit = -(self.portfolio_max_loss_pct * total_allocated)
-        print(f"[RMS] Total allocated capital: Rs{total_allocated:,.2f} | Loss limit: Rs{self.rms_loss_limit:.2f} ({self.portfolio_max_loss_pct*100:.2f}% of capital)")
-        self.alerts.notify(f"RMS Loss Limit: Rs{self.rms_loss_limit:.2f} ({self.portfolio_max_loss_pct*100:.2f}% of Rs{total_allocated:,.2f} allocated)")
+        # RMS exit halts disabled — no portfolio/ticker loss-limit exits this session.
 
         # Seed today's already-realized PnL from broker so a same-day restart
-        # carries forward prior closed-trade PnL into the RMS calculations.
+        # carries forward prior closed-trade PnL for reporting.
         self._seed_realized_pnl_from_broker()
 
         cycle_count = 0
@@ -340,15 +321,15 @@ class AutoTrader(
                 # =====================================================
                 now = self._now_market_time()
 
-                if not self._stoplock_done and now.time() >= STOP_LOCK_TIME:
-                    self._run_stoplock_exits(symbols)
-                    self._stoplock_done = True
-                    # Same 14:16 wake  drop losers before this candle's prediction.
-                    symbols, symbol_batches = self._strip_exited_from_active(symbols, batch_size)
-                    if not symbols:
-                        print("[AUTO_TRADER] All symbols exited at stop-lock  stopping.")
-                        self.stop_event.set()
-                        break
+                # 14:15 stop-lock disabled — no forced exit of losing positions before cycle.
+                # if not self._stoplock_done and now.time() >= STOP_LOCK_TIME:
+                #     self._run_stoplock_exits(symbols)
+                #     self._stoplock_done = True
+                #     symbols, symbol_batches = self._strip_exited_from_active(symbols, batch_size)
+                #     if not symbols:
+                #         print("[AUTO_TRADER] All symbols exited at stop-lock  stopping.")
+                #         self.stop_event.set()
+                #         break
 
                 #temp change 
                 if now.time() >= MARKET_EXIT_WARN_TIME and not self._exit_warning_sent:
@@ -1335,12 +1316,6 @@ class AutoTrader(
 
                 self.tlog.record("PNL_LOOP_TOTAL", t_pnl_loop)
                 self.current_capital = self.cash_balance + self.unrealized_pnl
-
-                # ==================== RMS: DAILY LOSS LIMIT CHECK ====================
-                # Cycle-level portfolio RMS removed  handled by tick-driven
-                # _check_live_portfolio_rms() in on_ltp_tick (LiveLTPStream thread).
-                # rms_loss_limit / rms_triggered are still set/used by that path.
-                # ======================================================================
 
                 t_ui = time.time()
 

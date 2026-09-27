@@ -62,60 +62,8 @@ class RiskMonitoringMixin:
                     ],
                 )
 
-            # ----- Per-ticker RMS halt (independent of portfolio RMS) -----
-            # Uses realized (closed trades for this symbol) + unrealized (open
-            # position live PnL). Threshold = 1% of entry_price * qty (dynamic per open).
-            realized_for_sym = float(self.realized_pnl_by_symbol.get(symbol, 0.0))
-            total_for_sym = realized_for_sym + pnl
-            # loss_threshold = -self.rms_per_ticker_loss_per_share * qty
-            loss_threshold = -(self.rms_per_ticker_loss_pct * entry * qty)
-
-            # Throttled per-ticker PnL log (every ~30s per symbol)  mirrors
-            # the [RMS-LIVE-PORTFOLIO] line so you can watch each symbol's
-            # headroom against its own threshold.
-            now = time.time()
-            last_print = self._last_per_ticker_print_ts.get(symbol, 0.0)
-            if now - last_print >= self._per_ticker_print_interval_sec:
-                self._last_per_ticker_print_ts[symbol] = now
-                usage_pct = (total_for_sym / loss_threshold * 100.0) if loss_threshold else 0.0
-                print(
-                    f"[RMS-TICKER] {symbol} total={total_for_sym:.2f} "
-                    f"(realized={realized_for_sym:.2f} + unrealized={pnl:.2f}) "
-                    f"threshold={loss_threshold:.2f} usage={usage_pct:.1f}% "
-                    f"qty={qty} side={side} ltp={ltp:.2f}"
-                )
-
-            if (total_for_sym <= loss_threshold
-                    and symbol not in self._exited_symbols
-                    and symbol not in self._rms_exit_inflight):
-                self._rms_exit_inflight.add(symbol)
-                print(
-                    f"[RMS-TICKER] {symbol} breached: total={total_for_sym:.2f} "
-                    f"(realized={realized_for_sym:.2f} + unrealized={pnl:.2f}) "
-                    f"<= threshold={loss_threshold:.2f} (qty={qty}). Exiting."
-                )
-                self._csv_logger.write(
-                    self.rms_events_log,
-                    [
-                        datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                        "PER_TICKER_BREACH", symbol,
-                        f"{total_for_sym:.2f}", f"{realized_for_sym:.2f}",
-                        f"{pnl:.2f}", f"{loss_threshold:.2f}",
-                        f"EXIT_SINGLE qty={qty}",
-                    ],
-                )
-                self._notify_rms_exit_to_api(symbol, total_for_sym)
-                threading.Thread(
-                    target=self._rms_exit_worker,
-                    args=(symbol,),
-                    name=f"RMSExit-{symbol}",
-                    daemon=True,
-                ).start()
-
-            # ----- Portfolio RMS halt disabled -----
-            # Keep the layer available, but do not let portfolio-level loss
-            # exit all stocks. Per-ticker RMS above remains active.
-            # self._check_live_portfolio_rms()
+            # Per-ticker and portfolio RMS exits disabled — live PnL tracking only.
+            # (See _rms_exit_worker / _check_live_portfolio_rms — not invoked.)
 
             # ----- Push live PnL snapshot to Redis (max 1 write/sec) -----
             now = time.time()
