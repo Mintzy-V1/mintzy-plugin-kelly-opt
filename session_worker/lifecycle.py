@@ -239,6 +239,9 @@ class LifecycleMixin:
                 raise
 
             if sym:
+                sym = str(sym).upper().replace("-EQ", "").strip()
+                if sym == "LTIM":
+                    sym = "LTM"
                 symbols.append(sym)
                 allocations[sym] = {
                     "capital": cap,
