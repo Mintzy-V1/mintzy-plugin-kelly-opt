@@ -155,16 +155,26 @@ class SessionBrokerMixin:
 
                     side = "BUY" if net_qty > 0 else "SELL"
 
+                    avg_raw = (
+                        p.get("averageprice")
+                        or p.get("avgprice")
+                        or p.get("avg_price")
+                        or p.get("avgnetprice")
+                        or p.get("totalbuyavgprice")
+                        or p.get("totalsellavgprice")
+                        or 0.0
+                    )
+                    try:
+                        avg_price = float(avg_raw or 0.0)
+                    except (TypeError, ValueError):
+                        avg_price = 0.0
+
                     positions.append({
                         "symbol": symbol,
                         "side": side,
                         "qty": abs(net_qty),
                         "product_type": product or "INTRADAY",
-                        "avg_price": float(
-                            p.get("averageprice")
-                            or p.get("avg_price")
-                            or 0.0
-                        ),
+                        "avg_price": avg_price,
                         "ltp": float(
                             p.get("ltp")
                             or p.get("lastprice")

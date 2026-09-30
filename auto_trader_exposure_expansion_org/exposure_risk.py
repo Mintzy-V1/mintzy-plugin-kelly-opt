@@ -153,12 +153,20 @@ class ExposureRiskMixin:
         t0 = time.time()
         leverage_mult = self._resolve_leverage_multiplier(default=4.0)
         leveraged_capital = leverage_mult * self.initial_capital
+        max_allowed = self.max_exposure_pct * leveraged_capital
+        current = self._total_symbol_exposure(symbol)
+        projected = current + float(order_value or 0.0)
 
-        result = (self._total_symbol_exposure(symbol) + order_value) <= (self.max_exposure_pct * leveraged_capital)
+        result = projected <= max_allowed
 
         elapsed = time.time() - t0
 
-        print(f"[TRACE] CAN_RESERVE {symbol}: {elapsed:.6f}s")
+        print(
+            f"[TRACE] CAN_RESERVE {symbol}: {elapsed:.6f}s "
+            f"current={current:.2f} order={float(order_value or 0.0):.2f} "
+            f"projected={projected:.2f} max={max_allowed:.2f} "
+            f"allowed={'Y' if result else 'N'}"
+        )
 
         self.tlog.record("CAN_RESERVE_EXPOSURE", t0, note=symbol)
 
@@ -188,22 +196,87 @@ class ExposureRiskMixin:
                 self.reserved_exposure.pop(symbol, None)
 
     # ---------- STOCK EXPOSURE ------------
-    
+
+    def _fallback_mark_price(self, symbol, broker_pos=None) -> float:
+        """Mark price only for an OPEN position when broker avg_price is 0/missing.
+
+        Do not call this for flat symbols — avg_price=0 with no qty is correct.
+        """
+        # 1) Internal ledger entry (set from orderbook on first fill)
+        try:
+            pos = (getattr(self, "positions", None) or {}).get(symbol) or {}
+            entry = float(pos.get("entry_price") or 0.0)
+            if entry > 0:
+                return entry
+        except Exception:
+            pass
+
+        # 2) Live tick entry / LTP
+        try:
+            lock = getattr(self, "live_pnl_lock", None)
+            if lock is not None:
+                with lock:
+                    tick = (getattr(self, "live_pnl", None) or {}).get(symbol) or {}
+            else:
+                tick = (getattr(self, "live_pnl", None) or {}).get(symbol) or {}
+            for key in ("entry", "ltp"):
+                px = float(tick.get(key) or 0.0)
+                if px > 0:
+                    return px
+        except Exception:
+            pass
+
+        # 3) Broker position LTP from cache
+        try:
+            if broker_pos:
+                ltp = float(broker_pos.get("ltp") or 0.0)
+                if ltp > 0:
+                    return ltp
+        except Exception:
+            pass
+
+        return 0.0
+
     def _stock_exposure(self, symbol):
+        """Notional of the open broker position for exposure capping.
+
+        - No open qty → exposure 0 (avg_price=0 is correct; do NOT invent LTP).
+        - Open qty + valid broker avg → qty * avg.
+        - Open qty + avg_price=0 (Angel quirk) → fallback mark (entry/LTP).
+        """
         with self.broker_pos_lock:
             broker_positions = list(self._broker_positions_cache or [])
 
+        open_pos = None
         for p in broker_positions:
-            if p["symbol"] == symbol:
-                qty = abs(p.get("qty", 0))
-                avg = p.get("avg_price", 0.0)
+            if p.get("symbol") == symbol and abs(int(p.get("qty") or 0)) > 0:
+                open_pos = p
+                break
 
-                if qty <= 0 or avg <= 0:
-                    return 0.0
+        # Flat in market → avg_price=0 is valid; never fall back to LTP/entry.
+        if open_pos is None:
+            return 0.0
 
-                return qty * avg
+        qty = abs(int(open_pos.get("qty") or 0))
+        avg = float(open_pos.get("avg_price") or 0.0)
 
-        return 0.0
+        if avg > 0:
+            return qty * avg
+
+        # Only when we DO have an open position but Angel left avg blank/0.
+        avg = self._fallback_mark_price(symbol, broker_pos=open_pos)
+        if avg <= 0:
+            print(
+                f"[EXPOSURE] {symbol}: open qty={qty} but no usable "
+                f"avg/entry/ltp — treating exposure as 0"
+            )
+            return 0.0
+
+        print(
+            f"[EXPOSURE] {symbol}: open qty={qty}, broker avg_price=0, "
+            f"using fallback mark={avg:.2f} exposure={qty * avg:.2f}"
+        )
+        return qty * avg
 
     # ---------- CASH / BALANCE ----------
 
